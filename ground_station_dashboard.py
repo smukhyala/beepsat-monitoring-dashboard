@@ -309,7 +309,7 @@ class BeepSatDashboard:
             ax.set_xlabel('Time (seconds ago)')
             
     def run(self):
-        """Run the dashboard"""
+        """Run the dashboard test"""
         try:
             self.root.mainloop()
         finally:
