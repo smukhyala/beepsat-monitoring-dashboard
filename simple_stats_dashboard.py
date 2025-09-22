@@ -463,6 +463,412 @@ def display_data_table():
     
     st.write(f"**Showing last {len(data_points)} of {len(st.session_state.telemetry_data)} total data points**")
 
+def display_mission_report():
+    """Generate and display a comprehensive mission summary report"""
+    if len(st.session_state.telemetry_data) < 5:
+        st.info("📋 Mission report will be available after collecting sufficient data (minimum 5 data points)")
+        st.markdown("### What the Mission Report Will Include:")
+        st.write("• **Mission Overview** - Duration, data points collected, system performance")
+        st.write("• **Power System Analysis** - Battery health, charging patterns, voltage stability")
+        st.write("• **Communication Assessment** - Signal quality, connectivity patterns")
+        st.write("• **System Health Report** - Error rates, anomalies, operational issues")
+        st.write("• **Performance Summary** - Key metrics and recommendations")
+        st.write("• **Trend Analysis** - What happened during the mission")
+        return
+    
+    # Extract data for analysis
+    battery_voltages, rssi_values, error_counts, charge_currents = extract_metric_arrays()
+    
+    # Calculate comprehensive statistics
+    calc = SimpleStatCalculator()
+    battery_stats = calc.calculate_stats(battery_voltages)
+    rssi_stats = calc.calculate_stats(rssi_values)
+    error_stats = calc.calculate_stats(error_counts)
+    charge_stats = calc.calculate_stats(charge_currents)
+    
+    # Mission duration
+    if st.session_state.mission_start_time:
+        mission_duration = time.time() - st.session_state.mission_start_time
+        duration_minutes = int(mission_duration // 60)
+        duration_seconds = int(mission_duration % 60)
+    else:
+        mission_duration = 0
+        duration_minutes = duration_seconds = 0
+    
+    # Generate comprehensive report
+    st.markdown("## 📋 BEEPSAT MISSION SUMMARY REPORT")
+    st.markdown("---")
+    
+    # Mission Overview
+    st.markdown("### 🚀 Mission Overview")
+    
+    mission_status = "🟢 COMPLETED" if not st.session_state.monitoring else "🟡 IN PROGRESS"
+    st.markdown(f"**Mission Status:** {mission_status}")
+    st.markdown(f"**Mission Duration:** {duration_minutes}m {duration_seconds}s")
+    st.markdown(f"**Data Points Collected:** {len(st.session_state.telemetry_data)}")
+    st.markdown(f"**Data Collection Rate:** {len(st.session_state.telemetry_data) / max(mission_duration/60, 1):.1f} points/minute")
+    
+    # Overall mission health score
+    health_score = calculate_mission_health_score(battery_stats, rssi_stats, error_stats)
+    health_color = get_health_color(health_score)
+    st.markdown(f"**Overall Mission Health:** {health_color} {health_score:.0f}/100")
+    
+    st.markdown("---")
+    
+    # Power System Analysis
+    st.markdown("### 🔋 Power System Analysis")
+    
+    if battery_stats:
+        battery_health = analyze_battery_performance(battery_stats, charge_stats)
+        st.markdown(battery_health)
+    
+    st.markdown("---")
+    
+    # Communication Assessment
+    st.markdown("### 📡 Communication System Assessment")
+    
+    if rssi_stats:
+        comm_analysis = analyze_communication_performance(rssi_stats)
+        st.markdown(comm_analysis)
+    
+    st.markdown("---")
+    
+    # System Health Report
+    st.markdown("### 🏥 System Health Report")
+    
+    if error_stats:
+        health_analysis = analyze_system_health(error_stats, battery_stats)
+        st.markdown(health_analysis)
+    
+    st.markdown("---")
+    
+    # Trend Analysis
+    st.markdown("### 📈 Trend Analysis")
+    
+    trend_analysis = analyze_mission_trends(battery_stats, rssi_stats, error_stats)
+    st.markdown(trend_analysis)
+    
+    st.markdown("---")
+    
+    # Recommendations
+    st.markdown("### 💡 Recommendations & Insights")
+    
+    recommendations = generate_recommendations(battery_stats, rssi_stats, error_stats, mission_duration)
+    st.markdown(recommendations)
+    
+    # Mission Score Summary
+    st.markdown("---")
+    st.markdown("### 📊 Mission Performance Summary")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        power_score = calculate_power_score(battery_stats)
+        st.metric("Power Score", f"{power_score:.0f}/100", f"{get_performance_trend(power_score)}")
+    
+    with col2:
+        comm_score = calculate_comm_score(rssi_stats)
+        st.metric("Comm Score", f"{comm_score:.0f}/100", f"{get_performance_trend(comm_score)}")
+    
+    with col3:
+        reliability_score = calculate_reliability_score(error_stats)
+        st.metric("Reliability Score", f"{reliability_score:.0f}/100", f"{get_performance_trend(reliability_score)}")
+    
+    with col4:
+        st.metric("Mission Grade", f"{get_mission_grade(health_score)}", f"{health_score:.0f}/100")
+
+def calculate_mission_health_score(battery_stats, rssi_stats, error_stats):
+    """Calculate overall mission health score"""
+    score = 100
+    
+    if battery_stats:
+        # Battery health impact
+        if battery_stats['mean'] < 6.5:
+            score -= 20
+        if battery_stats['cv'] > 5:  # High variability
+            score -= 10
+        if len(battery_stats['anomalies']) > 0:
+            score -= 5 * len(battery_stats['anomalies'])
+    
+    if rssi_stats:
+        # Communication health impact
+        if rssi_stats['mean'] < -70:
+            score -= 15
+        if rssi_stats['cv'] > 20:  # High signal variability
+            score -= 10
+    
+    if error_stats:
+        # Error impact
+        if error_stats['slope'] > 0.01:  # Increasing errors
+            score -= 25
+        if error_stats['max'] > 10:  # High error count
+            score -= 15
+    
+    return max(score, 0)
+
+def get_health_color(score):
+    """Get color emoji for health score"""
+    if score >= 90:
+        return "🟢"
+    elif score >= 75:
+        return "🟡"
+    elif score >= 50:
+        return "🟠"
+    else:
+        return "🔴"
+
+def analyze_battery_performance(battery_stats, charge_stats):
+    """Analyze battery performance and generate report text"""
+    analysis = []
+    
+    avg_voltage = battery_stats['mean']
+    voltage_stability = battery_stats['cv']
+    voltage_trend = battery_stats['slope']
+    
+    # Overall battery health
+    if avg_voltage > 7.2:
+        analysis.append("**Battery Health: 🟢 EXCELLENT** - Average voltage of {:.2f}V indicates healthy power system.".format(avg_voltage))
+    elif avg_voltage > 6.8:
+        analysis.append("**Battery Health: 🟡 GOOD** - Average voltage of {:.2f}V shows adequate power levels.".format(avg_voltage))
+    elif avg_voltage > 6.3:
+        analysis.append("**Battery Health: 🟠 FAIR** - Average voltage of {:.2f}V suggests monitoring required.".format(avg_voltage))
+    else:
+        analysis.append("**Battery Health: 🔴 POOR** - Average voltage of {:.2f}V indicates critical power situation.".format(avg_voltage))
+    
+    # Voltage stability
+    if voltage_stability < 2:
+        analysis.append("Voltage stability was excellent with only {:.1f}% variation.".format(voltage_stability))
+    elif voltage_stability < 5:
+        analysis.append("Voltage showed good stability with {:.1f}% variation.".format(voltage_stability))
+    else:
+        analysis.append("Voltage exhibited high variability ({:.1f}%), indicating potential power system issues.".format(voltage_stability))
+    
+    # Trend analysis
+    if voltage_trend > 0.001:
+        analysis.append("📈 Positive trend: Battery voltage increased during mission, possibly due to charging.")
+    elif voltage_trend < -0.001:
+        analysis.append("📉 Discharge trend: Battery voltage decreased by {:.3f}V per reading, indicating normal discharge.".format(abs(voltage_trend)))
+    else:
+        analysis.append("➡️ Stable trend: Battery voltage remained consistent throughout mission.")
+    
+    # Charging analysis
+    if charge_stats and charge_stats['mean'] > 0.1:
+        analysis.append("⚡ Charging detected: Average charging current of {:.2f}A suggests active power generation.".format(charge_stats['mean']))
+    
+    # Anomaly detection
+    if battery_stats['anomalies']:
+        analysis.append("⚠️ {} voltage anomalies detected, requiring investigation.".format(len(battery_stats['anomalies'])))
+    
+    return " ".join(analysis)
+
+def analyze_communication_performance(rssi_stats):
+    """Analyze communication system performance"""
+    analysis = []
+    
+    avg_rssi = rssi_stats['mean']
+    signal_stability = rssi_stats['cv']
+    
+    # Signal quality assessment
+    if avg_rssi > -50:
+        analysis.append("**Signal Quality: 🟢 EXCELLENT** - Average RSSI of {:.1f} dBm indicates strong communication link.".format(avg_rssi))
+    elif avg_rssi > -65:
+        analysis.append("**Signal Quality: 🟡 GOOD** - Average RSSI of {:.1f} dBm shows reliable communication.".format(avg_rssi))
+    elif avg_rssi > -80:
+        analysis.append("**Signal Quality: 🟠 FAIR** - Average RSSI of {:.1f} dBm suggests marginal communication.".format(avg_rssi))
+    else:
+        analysis.append("**Signal Quality: 🔴 POOR** - Average RSSI of {:.1f} dBm indicates weak communication link.".format(avg_rssi))
+    
+    # Signal stability
+    signal_range = rssi_stats['max'] - rssi_stats['min']
+    if signal_range < 20:
+        analysis.append("Signal showed excellent stability with only {:.1f} dBm variation.".format(signal_range))
+    elif signal_range < 35:
+        analysis.append("Signal demonstrated good stability with {:.1f} dBm range.".format(signal_range))
+    else:
+        analysis.append("Signal exhibited high variability ({:.1f} dBm range), possibly due to orbital mechanics or interference.".format(signal_range))
+    
+    # Deep fades detection
+    if rssi_stats['min'] < -85:
+        analysis.append("🚨 Deep signal fades detected (minimum {:.0f} dBm), indicating potential communication blackouts.".format(rssi_stats['min']))
+    
+    # Signal anomalies
+    if rssi_stats['anomalies']:
+        analysis.append("📡 {} signal anomalies detected, suggesting environmental or hardware effects.".format(len(rssi_stats['anomalies'])))
+    
+    return " ".join(analysis)
+
+def analyze_system_health(error_stats, battery_stats):
+    """Analyze overall system health"""
+    analysis = []
+    
+    current_errors = error_stats['max']
+    error_growth = error_stats['slope']
+    
+    # Error level assessment
+    if current_errors == 0:
+        analysis.append("**System Reliability: 🟢 PERFECT** - No errors detected during mission.")
+    elif current_errors < 3:
+        analysis.append("**System Reliability: 🟢 EXCELLENT** - Only {} errors detected, indicating robust operation.".format(current_errors))
+    elif current_errors < 8:
+        analysis.append("**System Reliability: 🟡 GOOD** - {} errors detected, within acceptable range.".format(current_errors))
+    elif current_errors < 15:
+        analysis.append("**System Reliability: 🟠 FAIR** - {} errors detected, monitoring recommended.".format(current_errors))
+    else:
+        analysis.append("**System Reliability: 🔴 POOR** - {} errors detected, investigation required.".format(current_errors))
+    
+    # Error trend
+    if error_growth > 0.01:
+        analysis.append("🔴 Error rate is increasing, indicating potential system degradation.")
+    elif error_growth > 0.001:
+        analysis.append("🟠 Slight increase in error rate observed.")
+    else:
+        analysis.append("🟢 Error rate remained stable throughout mission.")
+    
+    # Correlation with power
+    if battery_stats and battery_stats['mean'] < 6.5 and current_errors > 5:
+        analysis.append("⚠️ High error count correlates with low battery voltage, suggesting power-related issues.")
+    
+    return " ".join(analysis)
+
+def analyze_mission_trends(battery_stats, rssi_stats, error_stats):
+    """Analyze overall mission trends"""
+    trends = []
+    
+    # Power trends
+    if battery_stats:
+        if battery_stats['slope'] < -0.001:
+            trends.append("🔋 **Power Trend:** Steady discharge observed, consistent with mission operations.")
+        elif battery_stats['slope'] > 0.001:
+            trends.append("🔋 **Power Trend:** Battery charging detected, indicating active power generation.")
+        else:
+            trends.append("🔋 **Power Trend:** Stable power levels maintained throughout mission.")
+    
+    # Communication trends
+    if rssi_stats:
+        if rssi_stats['cv'] > 15:
+            trends.append("📡 **Communication Trend:** High signal variability suggests orbital motion effects or environmental changes.")
+        else:
+            trends.append("📡 **Communication Trend:** Stable communication link maintained.")
+    
+    # System trends
+    if error_stats:
+        if error_stats['slope'] > 0.005:
+            trends.append("🚨 **System Trend:** Increasing error rate indicates potential system stress or degradation.")
+        else:
+            trends.append("🚨 **System Trend:** Stable system performance with consistent error levels.")
+    
+    return "\n\n".join(trends) if trends else "No significant trends detected in mission data."
+
+def generate_recommendations(battery_stats, rssi_stats, error_stats, mission_duration):
+    """Generate mission recommendations"""
+    recommendations = []
+    
+    # Battery recommendations
+    if battery_stats:
+        if battery_stats['mean'] < 6.5:
+            recommendations.append("🔋 **Power Management:** Consider implementing power-saving modes or increasing charging efficiency.")
+        if len(battery_stats['anomalies']) > 2:
+            recommendations.append("🔋 **Power Monitoring:** Investigate voltage anomalies to identify potential hardware issues.")
+    
+    # Communication recommendations
+    if rssi_stats:
+        if rssi_stats['mean'] < -70:
+            recommendations.append("📡 **Communication:** Consider antenna optimization or power amplification for improved signal strength.")
+        if rssi_stats['min'] < -85:
+            recommendations.append("📡 **Link Margin:** Implement communication protocols robust to signal fades.")
+    
+    # System recommendations
+    if error_stats:
+        if error_stats['slope'] > 0.01:
+            recommendations.append("🚨 **System Health:** Investigate root cause of increasing error rate.")
+        if error_stats['max'] > 10:
+            recommendations.append("🚨 **Error Management:** Implement enhanced error handling and recovery procedures.")
+    
+    # Mission duration recommendations
+    if mission_duration < 60:
+        recommendations.append("⏱️ **Mission Duration:** Consider longer missions to gather more comprehensive performance data.")
+    
+    # General recommendations
+    recommendations.append("📊 **Data Analysis:** Continue monitoring these metrics for long-term trend analysis.")
+    recommendations.append("🔄 **Mission Planning:** Use this data to optimize future mission parameters.")
+    
+    return "\n\n".join(recommendations)
+
+def calculate_power_score(battery_stats):
+    """Calculate power system score"""
+    if not battery_stats:
+        return 50
+    
+    score = 100
+    if battery_stats['mean'] < 6.5:
+        score -= 30
+    if battery_stats['cv'] > 5:
+        score -= 20
+    if len(battery_stats['anomalies']) > 0:
+        score -= 10 * len(battery_stats['anomalies'])
+    
+    return max(score, 0)
+
+def calculate_comm_score(rssi_stats):
+    """Calculate communication score"""
+    if not rssi_stats:
+        return 50
+    
+    score = 100
+    if rssi_stats['mean'] < -70:
+        score -= 25
+    if rssi_stats['cv'] > 20:
+        score -= 15
+    if rssi_stats['min'] < -85:
+        score -= 20
+    
+    return max(score, 0)
+
+def calculate_reliability_score(error_stats):
+    """Calculate system reliability score"""
+    if not error_stats:
+        return 100
+    
+    score = 100
+    if error_stats['max'] > 5:
+        score -= 20
+    if error_stats['slope'] > 0.01:
+        score -= 30
+    
+    return max(score, 0)
+
+def get_performance_trend(score):
+    """Get performance trend indicator"""
+    if score >= 90:
+        return "Excellent"
+    elif score >= 75:
+        return "Good"
+    elif score >= 50:
+        return "Fair"
+    else:
+        return "Needs Attention"
+
+def get_mission_grade(score):
+    """Get overall mission grade"""
+    if score >= 95:
+        return "A+"
+    elif score >= 90:
+        return "A"
+    elif score >= 85:
+        return "A-"
+    elif score >= 80:
+        return "B+"
+    elif score >= 75:
+        return "B"
+    elif score >= 70:
+        return "B-"
+    elif score >= 65:
+        return "C+"
+    elif score >= 60:
+        return "C"
+    else:
+        return "D"
+
 def main():
     """Main dashboard function"""
     initialize_session_state()
@@ -523,7 +929,7 @@ def main():
             st.metric("⏰ Uptime", f"{power.get('uptime_seconds', 0):.0f} s")
     
     # Create tabs
-    tab1, tab2, tab3 = st.tabs(["📈 Live Graphs", "📊 Statistics", "📋 Data Table"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Live Graphs", "📊 Statistics", "📋 Data Table", "📝 Mission Report"])
     
     with tab1:
         st.markdown("### Real-Time Telemetry Graphs")
@@ -536,6 +942,10 @@ def main():
     with tab3:
         st.markdown("### Raw Telemetry Data")
         display_data_table()
+    
+    with tab4:
+        st.markdown("### Mission Summary Report")
+        display_mission_report()
     
     # Auto-refresh
     time.sleep(1)
