@@ -64,6 +64,338 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+class SignalProcessor:
+    """Signal processing utilities for peak detection and fitting"""
+    
+    @staticmethod
+    def find_peaks(values, min_height=None, min_distance=1):
+        """
+        Find peaks (local maxima) in signal data
+        
+        Args:
+            values: List of signal values
+            min_height: Minimum height for peak detection
+            min_distance: Minimum distance between peaks (in indices)
+        
+        Returns:
+            dict with peak indices, heights, and properties
+        """
+        if len(values) < 3:
+            return {'peaks': [], 'peak_heights': [], 'peak_properties': []}
+        
+        peaks = []
+        peak_heights = []
+        peak_properties = []
+        
+        # Convert to list if needed
+        vals = list(values)
+        n = len(vals)
+        
+        # Find local maxima
+        for i in range(1, n - 1):
+            # Check if current point is higher than neighbors
+            if vals[i] > vals[i-1] and vals[i] > vals[i+1]:
+                # Apply minimum height filter
+                if min_height is None or vals[i] >= min_height:
+                    # Apply minimum distance filter
+                    if not peaks or (i - peaks[-1]) >= min_distance:
+                        peaks.append(i)
+                        peak_heights.append(vals[i])
+                        
+                        # Calculate peak properties
+                        prominence = SignalProcessor._calculate_prominence(vals, i)
+                        width = SignalProcessor._calculate_width(vals, i)
+                        
+                        peak_properties.append({
+                            'prominence': prominence,
+                            'width': width,
+                            'left_base': max(0, i - width//2),
+                            'right_base': min(n-1, i + width//2)
+                        })
+        
+        return {
+            'peaks': peaks,
+            'peak_heights': peak_heights,
+            'peak_properties': peak_properties,
+            'total_peaks': len(peaks)
+        }
+    
+    @staticmethod
+    def find_valleys(values, max_height=None, min_distance=1):
+        """
+        Find valleys (local minima) in signal data
+        """
+        if len(values) < 3:
+            return {'valleys': [], 'valley_depths': [], 'total_valleys': 0}
+        
+        # Invert signal and find peaks to get valleys
+        inverted = [-v for v in values]
+        if max_height is not None:
+            min_height_inverted = -max_height
+        else:
+            min_height_inverted = None
+        
+        valley_result = SignalProcessor.find_peaks(inverted, min_height_inverted, min_distance)
+        
+        return {
+            'valleys': valley_result['peaks'],
+            'valley_depths': [-h for h in valley_result['peak_heights']],
+            'total_valleys': valley_result['total_peaks']
+        }
+    
+    @staticmethod
+    def _calculate_prominence(values, peak_idx):
+        """Calculate peak prominence (height above surrounding minima)"""
+        n = len(values)
+        peak_height = values[peak_idx]
+        
+        # Find minimum to the left
+        left_min = peak_height
+        for i in range(peak_idx - 1, -1, -1):
+            if values[i] < left_min:
+                left_min = values[i]
+        
+        # Find minimum to the right
+        right_min = peak_height
+        for i in range(peak_idx + 1, n):
+            if values[i] < right_min:
+                right_min = values[i]
+        
+        # Prominence is height above the higher of the two minima
+        reference_min = max(left_min, right_min)
+        return peak_height - reference_min
+    
+    @staticmethod
+    def _calculate_width(values, peak_idx, rel_height=0.5):
+        """Calculate peak width at relative height"""
+        n = len(values)
+        peak_height = values[peak_idx]
+        
+        # Find the base level
+        left_min = peak_height
+        right_min = peak_height
+        
+        for i in range(peak_idx - 1, -1, -1):
+            if values[i] < left_min:
+                left_min = values[i]
+        
+        for i in range(peak_idx + 1, n):
+            if values[i] < right_min:
+                right_min = values[i]
+        
+        base_level = max(left_min, right_min)
+        height_threshold = base_level + rel_height * (peak_height - base_level)
+        
+        # Find width at this height
+        left_width = 0
+        for i in range(peak_idx - 1, -1, -1):
+            if values[i] <= height_threshold:
+                break
+            left_width += 1
+        
+        right_width = 0
+        for i in range(peak_idx + 1, n):
+            if values[i] <= height_threshold:
+                break
+            right_width += 1
+        
+        return left_width + right_width + 1
+    
+    @staticmethod
+    def fit_gaussian_peak(x_data, y_data, peak_idx):
+        """
+        Fit a Gaussian curve to a peak using least-squares minimization
+        
+        Args:
+            x_data: X coordinates (indices or time)
+            y_data: Y coordinates (signal values)
+            peak_idx: Index of the peak center
+        
+        Returns:
+            dict with fitted parameters and quality metrics
+        """
+        try:
+            # Extract local region around peak
+            n = len(y_data)
+            window_size = min(10, n // 4)  # Adaptive window size
+            start_idx = max(0, peak_idx - window_size)
+            end_idx = min(n, peak_idx + window_size + 1)
+            
+            local_x = x_data[start_idx:end_idx]
+            local_y = y_data[start_idx:end_idx]
+            
+            if len(local_y) < 3:
+                return None
+            
+            # Initial parameter estimates
+            peak_height = y_data[peak_idx]
+            peak_center = x_data[peak_idx]
+            
+            # Estimate baseline from edges
+            baseline = (local_y[0] + local_y[-1]) / 2
+            amplitude = peak_height - baseline
+            
+            # Estimate width from data spread
+            sigma_estimate = len(local_y) / 6  # Rough estimate
+            
+            # Simple least-squares fitting using normal equations
+            # For Gaussian: y = A * exp(-0.5 * ((x - mu) / sigma)^2) + baseline
+            # We'll use a simplified linear approximation in log space
+            
+            # Remove baseline
+            y_shifted = [max(y - baseline, 0.001) for y in local_y]  # Avoid log(0)
+            
+            # Linear least squares for log-transformed Gaussian
+            # log(y) ≈ log(A) - 0.5 * ((x - mu) / sigma)^2
+            log_y = [math.log(y) for y in y_shifted]
+            
+            # Use the peak as center and fit width
+            x_centered = [(x - peak_center) for x in local_x]
+            x_squared = [x * x for x in x_centered]
+            
+            # Linear regression: log(y) = a + b * x^2
+            n_points = len(log_y)
+            sum_x2 = sum(x_squared)
+            sum_x4 = sum(x * x for x in x_squared)
+            sum_y = sum(log_y)
+            sum_x2y = sum(x_squared[i] * log_y[i] for i in range(n_points))
+            
+            # Solve normal equations
+            if n_points * sum_x4 - sum_x2 * sum_x2 != 0:
+                b = (n_points * sum_x2y - sum_x2 * sum_y) / (n_points * sum_x4 - sum_x2 * sum_x2)
+                a = (sum_y - b * sum_x2) / n_points
+                
+                # Convert back to Gaussian parameters
+                fitted_amplitude = math.exp(a)
+                fitted_sigma = math.sqrt(-0.5 / b) if b < 0 else sigma_estimate
+                fitted_center = peak_center
+                fitted_baseline = baseline
+                
+                # Calculate R-squared
+                y_pred = [fitted_amplitude * math.exp(-0.5 * ((x - fitted_center) / fitted_sigma) ** 2) + fitted_baseline 
+                         for x in local_x]
+                
+                ss_res = sum((local_y[i] - y_pred[i]) ** 2 for i in range(len(local_y)))
+                y_mean = sum(local_y) / len(local_y)
+                ss_tot = sum((y - y_mean) ** 2 for y in local_y)
+                
+                r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                
+                return {
+                    'amplitude': fitted_amplitude,
+                    'center': fitted_center,
+                    'sigma': fitted_sigma,
+                    'baseline': fitted_baseline,
+                    'r_squared': max(0, min(1, r_squared)),
+                    'peak_area': fitted_amplitude * fitted_sigma * math.sqrt(2 * math.pi),
+                    'fwhm': 2.355 * fitted_sigma,  # Full Width at Half Maximum
+                    'quality': 'good' if r_squared > 0.8 else 'fair' if r_squared > 0.5 else 'poor'
+                }
+            
+        except (ValueError, ZeroDivisionError, OverflowError):
+            pass
+        
+        # Fallback simple characterization
+        return {
+            'amplitude': peak_height - baseline if 'baseline' in locals() else peak_height,
+            'center': peak_center if 'peak_center' in locals() else peak_idx,
+            'sigma': sigma_estimate if 'sigma_estimate' in locals() else 1.0,
+            'baseline': baseline if 'baseline' in locals() else 0,
+            'r_squared': 0.0,
+            'peak_area': 0.0,
+            'fwhm': 0.0,
+            'quality': 'poor'
+        }
+    
+    @staticmethod
+    def analyze_signal_peaks(values, signal_name="Signal"):
+        """
+        Comprehensive peak analysis of a signal
+        
+        Args:
+            values: Signal data
+            signal_name: Name of the signal for reporting
+        
+        Returns:
+            dict with complete peak analysis
+        """
+        if len(values) < 5:
+            return {
+                'signal_name': signal_name,
+                'total_peaks': 0,
+                'total_valleys': 0,
+                'peak_analysis': {},
+                'summary': f"Insufficient data for {signal_name} peak analysis"
+            }
+        
+        # Create index array for fitting
+        indices = list(range(len(values)))
+        
+        # Adaptive thresholds based on signal statistics
+        mean_val = sum(values) / len(values)
+        max_val = max(values)
+        min_val = min(values)
+        signal_range = max_val - min_val
+        
+        # Set thresholds as percentages of signal range
+        peak_threshold = mean_val + 0.1 * signal_range
+        valley_threshold = mean_val - 0.1 * signal_range
+        min_distance = max(2, len(values) // 20)  # Adaptive minimum distance
+        
+        # Find peaks and valleys
+        peaks_result = SignalProcessor.find_peaks(values, peak_threshold, min_distance)
+        valleys_result = SignalProcessor.find_valleys(values, valley_threshold, min_distance)
+        
+        # Fit Gaussian to significant peaks
+        fitted_peaks = []
+        if peaks_result['peaks']:
+            for i, peak_idx in enumerate(peaks_result['peaks']):
+                if peaks_result['peak_properties'][i]['prominence'] > 0.05 * signal_range:
+                    fit_result = SignalProcessor.fit_gaussian_peak(indices, values, peak_idx)
+                    if fit_result:
+                        fitted_peaks.append({
+                            'index': peak_idx,
+                            'height': peaks_result['peak_heights'][i],
+                            'prominence': peaks_result['peak_properties'][i]['prominence'],
+                            'width': peaks_result['peak_properties'][i]['width'],
+                            'fit': fit_result
+                        })
+        
+        # Generate summary
+        summary_parts = []
+        if peaks_result['total_peaks'] > 0:
+            avg_peak_height = sum(peaks_result['peak_heights']) / len(peaks_result['peak_heights'])
+            summary_parts.append(f"{peaks_result['total_peaks']} peaks detected (avg height: {avg_peak_height:.2f})")
+        
+        if valleys_result['total_valleys'] > 0:
+            avg_valley_depth = sum(valleys_result['valley_depths']) / len(valleys_result['valley_depths'])
+            summary_parts.append(f"{valleys_result['total_valleys']} valleys detected (avg depth: {avg_valley_depth:.2f})")
+        
+        if fitted_peaks:
+            good_fits = sum(1 for p in fitted_peaks if p['fit']['r_squared'] > 0.7)
+            summary_parts.append(f"{len(fitted_peaks)} peaks fitted ({good_fits} good fits)")
+        
+        summary = "; ".join(summary_parts) if summary_parts else f"No significant peaks detected in {signal_name}"
+        
+        return {
+            'signal_name': signal_name,
+            'total_peaks': peaks_result['total_peaks'],
+            'total_valleys': valleys_result['total_valleys'],
+            'peak_indices': peaks_result['peaks'],
+            'peak_heights': peaks_result['peak_heights'],
+            'valley_indices': valleys_result['valleys'],
+            'valley_depths': valleys_result['valley_depths'],
+            'fitted_peaks': fitted_peaks,
+            'peak_analysis': {
+                'max_peak_height': max(peaks_result['peak_heights']) if peaks_result['peak_heights'] else 0,
+                'avg_peak_prominence': sum(p['prominence'] for p in fitted_peaks) / len(fitted_peaks) if fitted_peaks else 0,
+                'avg_peak_width': sum(p['width'] for p in fitted_peaks) / len(fitted_peaks) if fitted_peaks else 0,
+                'signal_range': signal_range,
+                'peak_density': len(peaks_result['peaks']) / len(values) * 100  # peaks per 100 data points
+            },
+            'summary': summary
+        }
+
 class SimpleStatCalculator:
     """Simple statistics calculator"""
     
@@ -283,6 +615,7 @@ def display_statistics():
         st.write("📡 **Signal:** Average RSSI, Quality, Signal fades")  
         st.write("🚨 **Errors:** Growth rate, Error spikes, Trends")
         st.write("⚡ **Power:** Health score, Stability metrics")
+        st.write("🔍 **Signal Processing:** Peak detection, Peak fitting, Signal analysis")
         return
     
     # Extract data
@@ -379,6 +712,149 @@ def display_statistics():
             else:
                 power_health = "🔴 Low"
             st.write(f"**Health:** {power_health}")
+    
+    # Signal Processing Analysis Section
+    st.markdown("---")
+    st.markdown("## 🔍 SIGNAL PROCESSING ANALYSIS")
+    
+    # Perform peak analysis on battery and RSSI signals
+    if len(battery_voltages) >= 5:
+        battery_peak_analysis = SignalProcessor.analyze_signal_peaks(battery_voltages, "Battery Voltage")
+        rssi_peak_analysis = SignalProcessor.analyze_signal_peaks(rssi_values, "RSSI Signal")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 🔋 Battery Voltage Peak Analysis")
+            display_peak_analysis(battery_peak_analysis, "V")
+        
+        with col2:
+            st.markdown("### 📡 RSSI Signal Peak Analysis")
+            display_peak_analysis(rssi_peak_analysis, "dBm")
+        
+        # Combined signal analysis summary
+        st.markdown("### 📊 Signal Analysis Summary")
+        display_signal_summary(battery_peak_analysis, rssi_peak_analysis)
+    else:
+        st.info("🔍 Signal processing analysis requires at least 5 data points. Currently have: {}".format(len(battery_voltages)))
+
+def display_peak_analysis(peak_analysis, unit):
+    """Display peak analysis results for a signal"""
+    # Basic peak metrics
+    st.metric("Total Peaks", f"{peak_analysis['total_peaks']}")
+    st.metric("Total Valleys", f"{peak_analysis['total_valleys']}")
+    
+    if peak_analysis['total_peaks'] > 0:
+        st.metric("Peak Density", f"{peak_analysis['peak_analysis']['peak_density']:.1f}%")
+        st.metric("Max Peak Height", f"{peak_analysis['peak_analysis']['max_peak_height']:.2f} {unit}")
+        
+        if peak_analysis['fitted_peaks']:
+            # Show fitted peak information
+            st.write("**Fitted Peaks:**")
+            good_fits = [p for p in peak_analysis['fitted_peaks'] if p['fit']['r_squared'] > 0.7]
+            fair_fits = [p for p in peak_analysis['fitted_peaks'] if 0.5 <= p['fit']['r_squared'] <= 0.7]
+            poor_fits = [p for p in peak_analysis['fitted_peaks'] if p['fit']['r_squared'] < 0.5]
+            
+            st.write(f"• 🟢 Good fits: {len(good_fits)}")
+            st.write(f"• 🟡 Fair fits: {len(fair_fits)}")
+            st.write(f"• 🔴 Poor fits: {len(poor_fits)}")
+            
+            # Show best fit details if available
+            if good_fits:
+                best_fit = max(good_fits, key=lambda x: x['fit']['r_squared'])
+                st.write(f"**Best Fit (R² = {best_fit['fit']['r_squared']:.3f}):**")
+                st.write(f"• Amplitude: {best_fit['fit']['amplitude']:.3f} {unit}")
+                st.write(f"• Width (FWHM): {best_fit['fit']['fwhm']:.1f} data points")
+                st.write(f"• Peak Area: {best_fit['fit']['peak_area']:.2f}")
+        
+        # Display summary
+        st.write("**Analysis Summary:**")
+        st.info(peak_analysis['summary'])
+    else:
+        st.info("No significant peaks detected in this signal.")
+
+def display_signal_summary(battery_analysis, rssi_analysis):
+    """Display combined signal analysis summary"""
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        total_battery_peaks = battery_analysis['total_peaks']
+        total_rssi_peaks = rssi_analysis['total_peaks']
+        st.metric("Total Signal Features", f"{total_battery_peaks + total_rssi_peaks}")
+        
+    with col2:
+        battery_fitted = len(battery_analysis['fitted_peaks'])
+        rssi_fitted = len(rssi_analysis['fitted_peaks'])
+        st.metric("Successfully Fitted", f"{battery_fitted + rssi_fitted}")
+    
+    with col3:
+        # Calculate overall signal complexity
+        battery_density = battery_analysis['peak_analysis']['peak_density']
+        rssi_density = rssi_analysis['peak_analysis']['peak_density']
+        avg_complexity = (battery_density + rssi_density) / 2
+        
+        if avg_complexity > 15:
+            complexity = "🔴 High"
+        elif avg_complexity > 8:
+            complexity = "🟡 Moderate" 
+        else:
+            complexity = "🟢 Low"
+        st.metric("Signal Complexity", complexity)
+    
+    # Signal analysis insights
+    st.markdown("**🧠 Signal Processing Insights:**")
+    
+    insights = []
+    
+    # Battery signal insights
+    if battery_analysis['total_peaks'] > 3:
+        insights.append("🔋 Battery voltage shows significant fluctuations with multiple peaks detected")
+    elif battery_analysis['total_peaks'] > 0:
+        insights.append("🔋 Battery voltage shows some variability with minor peaks")
+    else:
+        insights.append("🔋 Battery voltage appears stable with no significant peaks")
+    
+    # RSSI signal insights
+    if rssi_analysis['total_peaks'] > 5:
+        insights.append("📡 RSSI signal shows high variability, possibly due to orbital mechanics or interference")
+    elif rssi_analysis['total_peaks'] > 2:
+        insights.append("📡 RSSI signal shows moderate fluctuations, typical for satellite communications")
+    else:
+        insights.append("📡 RSSI signal appears relatively stable")
+    
+    # Peak fitting insights
+    total_fitted = len(battery_analysis['fitted_peaks']) + len(rssi_analysis['fitted_peaks'])
+    if total_fitted > 0:
+        good_fits = sum(1 for p in battery_analysis['fitted_peaks'] + rssi_analysis['fitted_peaks'] 
+                       if p['fit']['r_squared'] > 0.7)
+        if good_fits / total_fitted > 0.7:
+            insights.append("🔍 Peak fitting shows excellent signal characterization quality")
+        elif good_fits / total_fitted > 0.4:
+            insights.append("🔍 Peak fitting shows good signal characterization with some uncertainty")
+        else:
+            insights.append("🔍 Peak fitting indicates complex signal patterns requiring further analysis")
+    
+    # Signal correlation insights
+    if battery_analysis['total_peaks'] > 0 and rssi_analysis['total_peaks'] > 0:
+        insights.append("🔗 Both signals show peak activity - consider correlation analysis")
+    
+    for insight in insights:
+        st.write(f"• {insight}")
+    
+    # Peak fitting quality visualization
+    if total_fitted > 0:
+        with st.expander("📈 Peak Fitting Quality Details", expanded=False):
+            st.markdown("**Battery Voltage Peak Fits:**")
+            for i, peak in enumerate(battery_analysis['fitted_peaks']):
+                quality_color = "🟢" if peak['fit']['r_squared'] > 0.8 else "🟡" if peak['fit']['r_squared'] > 0.5 else "🔴"
+                st.write(f"{quality_color} Peak {i+1}: R² = {peak['fit']['r_squared']:.3f}, "
+                        f"Height = {peak['height']:.3f} V, Width = {peak['fit']['fwhm']:.1f}")
+            
+            st.markdown("**RSSI Signal Peak Fits:**")
+            for i, peak in enumerate(rssi_analysis['fitted_peaks']):
+                quality_color = "🟢" if peak['fit']['r_squared'] > 0.8 else "🟡" if peak['fit']['r_squared'] > 0.5 else "🔴"
+                st.write(f"{quality_color} Peak {i+1}: R² = {peak['fit']['r_squared']:.3f}, "
+                        f"Height = {peak['height']:.1f} dBm, Width = {peak['fit']['fwhm']:.1f}")
 
 def create_simple_plots():
     """Create simple plots without subplots to avoid pandas conflict"""
@@ -394,10 +870,20 @@ def create_simple_plots():
     col1, col2 = st.columns(2)
     
     with col1:
-        # Battery plot
+        # Battery plot with peak annotations
         fig1 = go.Figure()
         fig1.add_trace(go.Scatter(x=timestamps, y=battery_voltages, mode='lines+markers',
                                 name='Battery', line=dict(color='cyan', width=3)))
+        
+        # Add peak annotations if enough data
+        if len(battery_voltages) >= 5:
+            battery_peak_analysis = SignalProcessor.analyze_signal_peaks(battery_voltages, "Battery")
+            if battery_peak_analysis['peak_indices']:
+                peak_timestamps = [timestamps[i] for i in battery_peak_analysis['peak_indices']]
+                peak_values = [battery_voltages[i] for i in battery_peak_analysis['peak_indices']]
+                fig1.add_trace(go.Scatter(x=peak_timestamps, y=peak_values, mode='markers',
+                                        name='Peaks', marker=dict(color='red', size=8, symbol='triangle-up')))
+        
         fig1.update_layout(title="🔋 Battery Voltage", height=300, 
                           plot_bgcolor='rgba(14, 17, 23, 0.8)', font=dict(color='white'))
         st.plotly_chart(fig1, use_container_width=True)
@@ -411,10 +897,25 @@ def create_simple_plots():
         st.plotly_chart(fig3, use_container_width=True)
     
     with col2:
-        # RSSI plot
+        # RSSI plot with peak annotations
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(x=timestamps, y=rssi_values, mode='lines+markers',
                                 name='RSSI', line=dict(color='lime', width=3)))
+        
+        # Add peak annotations if enough data
+        if len(rssi_values) >= 5:
+            rssi_peak_analysis = SignalProcessor.analyze_signal_peaks(rssi_values, "RSSI")
+            if rssi_peak_analysis['peak_indices']:
+                peak_timestamps = [timestamps[i] for i in rssi_peak_analysis['peak_indices']]
+                peak_values = [rssi_values[i] for i in rssi_peak_analysis['peak_indices']]
+                fig2.add_trace(go.Scatter(x=peak_timestamps, y=peak_values, mode='markers',
+                                        name='Peaks', marker=dict(color='red', size=8, symbol='triangle-up')))
+            if rssi_peak_analysis['valley_indices']:
+                valley_timestamps = [timestamps[i] for i in rssi_peak_analysis['valley_indices']]
+                valley_values = [rssi_values[i] for i in rssi_peak_analysis['valley_indices']]
+                fig2.add_trace(go.Scatter(x=valley_timestamps, y=valley_values, mode='markers',
+                                        name='Valleys', marker=dict(color='orange', size=8, symbol='triangle-down')))
+        
         fig2.update_layout(title="📡 Signal Strength", height=300,
                           plot_bgcolor='rgba(14, 17, 23, 0.8)', font=dict(color='white'))
         st.plotly_chart(fig2, use_container_width=True)
